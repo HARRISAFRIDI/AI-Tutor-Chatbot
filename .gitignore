@@ -1,0 +1,66 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+backend/.venv/
+
+# Python cache and build output
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local application data and generated files
+backend/uploads/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated embeddings and model artifacts
+*.faiss
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# PostgreSQL exports and backups
+*.dump
+*.sql.gz
+*.backup
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Frontend dependencies and build output
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
