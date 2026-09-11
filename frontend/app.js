@@ -20,6 +20,13 @@ const logoutButton = document.querySelector("#logout-button");
 const mobileMenuButton = document.querySelector("#mobile-menu-button");
 const sidebarOverlay = document.querySelector("#sidebar-overlay");
 const chatContext = document.querySelector("#chat-context");
+const composerWrapper = document.querySelector("#composer-wrapper");
+
+/** Always keep the question input bar visible — call after any subject/session change. */
+function ensureComposerVisible() {
+  composerWrapper.classList.remove("hidden");
+  composerWrapper.style.removeProperty("display");
+}
 const form = document.querySelector("#chat-form");
 const questionInput = document.querySelector("#question");
 const askButton = document.querySelector("#ask-button");
@@ -212,6 +219,12 @@ function renderMessages(messages) {
       <h3>What would you like to learn today?</h3>
       <p>Ask anything about your course material and I\'ll find the answer from your lecture notes.</p>
     </div>`;
+    if (messagesArea) {
+      messagesArea.scrollTo({
+        top: 0,
+        behavior: "auto",
+      });
+    }
     return;
   }
   answerContent.className = "answer-content";
@@ -717,6 +730,7 @@ sessionList.addEventListener("click", async (event) => {
   if (!sessionItem) return;
   currentSessionId = sessionItem.dataset.sessionId;
   chatSessionSelect.value = currentSessionId;
+  ensureComposerVisible();
   await loadChatSessions();
   await loadChatSessionMessages();
 });
@@ -725,16 +739,23 @@ courseSelect.addEventListener("change", async () => {
   currentCourseId = courseSelect.value;
   localStorage.setItem("tutor_course_id", currentCourseId);
   currentSessionId = null;
-  await loadChatSessions();
+  ensureComposerVisible();
+  questionInput.value = "";
+  questionInput.style.height = "auto";
+  formStatus.textContent = "Ready for a question in this course.";
   answerTitle.textContent = "";
   chatContext.textContent =
     getSelectedCourse()?.name || "Course material assistant";
   sourceBadge.classList.add("hidden");
+  metadata.classList.add("hidden");
   renderMessages([]);
+  questionInput.focus();
+  await loadChatSessions();
 });
 
 chatSessionSelect.addEventListener("change", async () => {
   currentSessionId = chatSessionSelect.value || null;
+  ensureComposerVisible();
   await loadChatSessions();
   if (currentSessionId) {
     await loadChatSessionMessages();
@@ -775,6 +796,7 @@ newSessionButton.addEventListener("click", async () => {
   chatSessionSelect.value = currentSessionId;
   sessionSearch.value = "";
   renderSessionList();
+  ensureComposerVisible();
   answerTitle.textContent = "";
   chatContext.textContent =
     getSelectedCourse()?.name || "Course material assistant";
