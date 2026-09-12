@@ -1,11 +1,14 @@
 from typing import TypedDict, Literal
+from time import perf_counter
 from uuid import UUID
 
 from langgraph.graph import StateGraph, START, END
 from sqlalchemy import text
 
 from database import SessionLocal
+from embeddings import create_embedding
 from llm import llm
+from memory import extract_memory_updates, format_memory_for_prompt, load_memory, save_memory
 from retrieval import search_course_material
 
 
@@ -18,7 +21,7 @@ class TutorState(TypedDict, total=False):
     course_id: str | None
     course_name: str | None
     question: str
-    rewritten_question: str
+    query_embedding: list[float]
 
     student_context: dict
     course_context: dict
@@ -26,6 +29,7 @@ class TutorState(TypedDict, total=False):
     retrieved_chunks: list[dict]
     retrieval_score: float
     retrieval_relevant: bool
+    llm_call_time_seconds: float
 
     answer: str
     answer_source: Literal["rag", "llm"] | None
@@ -47,33 +51,40 @@ def load_student_context(state: TutorState):
 
     print("\n========== LOAD STUDENT CONTEXT ==========")
 
-    # Temporary implementation.
-    # We will connect this to PostgreSQL later.
+    student_id = state["student_id"]
+    question   = state["question"]
+
+    db = SessionLocal()
+    try:
+        # 1. Detect if the student's message reveals profile info
+        updates = extract_memory_updates(question, db)
+        if updates:
+            print("Memory updates detected:", updates)
+            save_memory(student_id, updates, db)
+
+        # 2. Load the (possibly freshly updated) profile
+        profile = load_memory(student_id, db)
+        print("Student profile loaded:", profile)
+    finally:
+        db.close()
 
     return {
-        "student_context": {
-            "student_id": state["student_id"]
-        }
+        "student_context": profile
     }
 
 
 # ============================================================
-# STEP 3 — UNDERSTAND THE QUESTION
+# STEP 3 — CREATE QUERY EMBEDDING
 # ============================================================
 
-def understand_question(state: TutorState):
-
-    print("\n========== UNDERSTAND QUESTION ==========")
-
+def create_query_embedding(state: TutorState):
     question = state["question"].strip()
 
-    print("Original question:", question)
-
-    # Temporary implementation.
-    # Later Gemini will rewrite/understand the question.
+    print("\n========== CREATE QUERY EMBEDDING ==========")
+    print("Question:", question)
 
     return {
-        "rewritten_question": question
+        "query_embedding": create_embedding(question)
     }
 
 
@@ -85,7 +96,7 @@ def retrieve_course_material(state: TutorState):
 
     print("\n========== RETRIEVE COURSE MATERIAL ==========")
 
-    question = state["rewritten_question"]
+    question = state["question"].strip()
     course_id = state["course_id"]
     course_name = state["course_name"]
 
@@ -95,12 +106,15 @@ def retrieve_course_material(state: TutorState):
 
     # Always perform RAG retrieval first.
     # We do NOT decide RAG vs LLM before retrieval.
+    # top_k=5: retrieve 5 chunks — enough context for the LLM while still
+    # keeping the LIMIT small so pgvector can use the HNSW/IVFFlat index.
 
     results = search_course_material(
         question=question,
         course_id=course_id,
-        course_name=course_name,
-        top_k=5
+        query_embedding=state["query_embedding"],
+        top_k=5,
+        min_similarity=0.0,
     )
 
     print("\n========== RETRIEVAL RESULTS ==========")
@@ -124,10 +138,10 @@ def retrieve_course_material(state: TutorState):
 
 
 # ============================================================
-# STEP 5 — EVALUATE RETRIEVAL
+# STEP 5 — CHECK RELEVANCE
 # ============================================================
-def evaluate_retrieval(state: TutorState):
-    print("\n========== EVALUATE RETRIEVAL ==========")
+def check_relevance(state: TutorState):
+    print("\n========== CHECK RELEVANCE ==========")
 
     retrieved_chunks = state.get("retrieved_chunks", [])
 
@@ -140,7 +154,7 @@ def evaluate_retrieval(state: TutorState):
 
     top_score = retrieved_chunks[0]["similarity"]
 
-    threshold = 0.61
+    threshold = 0.65
 
     relevant = top_score >= threshold
 
@@ -172,27 +186,27 @@ def rag_answer(state: TutorState):
             "answer_source": "rag"
         }
 
+    # Build context from ALL retrieved chunks (up to top_k=5)
+    # so the LLM can synthesise a richer, more accurate answer.
     context_parts = []
-
     for i, chunk in enumerate(retrieved_chunks, start=1):
         context_parts.append(
-            f"""
---- Course Material {i} ---
-Page: {chunk.get("page_number")}
-Similarity: {chunk.get("similarity"):.4f}
-
-{chunk["content"]}
-"""
+            f"--- Chunk {i} | Page {chunk.get('page_number')} "
+            f"| Similarity {chunk.get('similarity', 0):.4f} ---\n"
+            f"{chunk['content']}"
         )
+    context = "\n\n".join(context_parts)
 
-    context = "\n".join(context_parts)
+    student_context = state.get("student_context", {})
+    profile_text    = format_memory_for_prompt(student_context)
+    profile_section = f"\nSTUDENT PROFILE:\n{profile_text}\n" if profile_text else ""
 
     prompt = f"""
 You are StudentAI, a university learning assistant.
 
 Your job is to help students understand their course
 material clearly.
-
+{profile_section}
 Answer the student's question using the provided
 course material.
 
@@ -201,14 +215,17 @@ IMPORTANT RULES:
 1. Use the provided course material as the primary source.
 2. Do not invent information that is not supported by
    the course material.
-3. Explain the concept in simple language.
+3. Explain the concept in simple language and tailor it
+   to the student's profile if one is available.
 4. Give an example when useful.
 5. If the material does not contain enough information
    to answer the question, clearly say that the course
    material does not provide enough information.
 6. Do not mention retrieved chunks, embeddings,
    vector databases, or internal system details.
-7. Answer directly as a helpful university tutor.
+7. If the student asks about their own profile (e.g. favourite
+   topic), answer directly from the STUDENT PROFILE section.
+8. Answer directly as a helpful university tutor.
 
 COURSE MATERIAL:
 
@@ -221,7 +238,10 @@ STUDENT QUESTION:
 Now provide the answer.
 """
 
+    llm_started_at = perf_counter()
     response = llm.invoke(prompt)
+    llm_call_time_seconds = perf_counter() - llm_started_at
+    print(f"LLM call time: {llm_call_time_seconds:.3f} seconds")
 
     # Gemini/LangChain may return content as either
     # a normal string or a list of content blocks.
@@ -240,7 +260,8 @@ Now provide the answer.
 
     return {
         "answer": answer,
-        "answer_source": "rag"
+        "answer_source": "rag",
+        "llm_call_time_seconds": llm_call_time_seconds
     }
 
 # ============================================================
@@ -251,18 +272,29 @@ def general_llm(state: TutorState):
 
     print("\n========== GENERAL LLM ==========")
 
+    student_context = state.get("student_context", {})
+    profile_text    = format_memory_for_prompt(student_context)
+    profile_section = f"\nSTUDENT PROFILE:\n{profile_text}\n" if profile_text else ""
+
     prompt = f"""
 You are StudentAI, a helpful university learning assistant.
-
+{profile_section}
 Answer the student's question clearly and accurately. The question was not
 well-supported by the selected course material, so answer from your general
-knowledge. Explain difficult ideas simply and use an example when useful.
+knowledge. Explain difficult ideas simply and tailor the explanation to the
+student's profile if one is available. Use an example when useful.
+
+If the student asks about their own profile (e.g. favourite topic, learning
+style), answer directly from the STUDENT PROFILE section above.
 
 Student question:
 {state["question"]}
 """
 
+    llm_started_at = perf_counter()
     response = llm.invoke(prompt)
+    llm_call_time_seconds = perf_counter() - llm_started_at
+    print(f"LLM call time: {llm_call_time_seconds:.3f} seconds")
 
     if isinstance(response.content, str):
         answer = response.content
@@ -276,7 +308,8 @@ Student question:
 
     return {
         "answer": answer,
-        "answer_source": "llm"
+        "answer_source": "llm",
+        "llm_call_time_seconds": llm_call_time_seconds
     }
 
 
@@ -394,8 +427,8 @@ builder.add_node(
 )
 
 builder.add_node(
-    "understand_question",
-    understand_question
+    "create_query_embedding",
+    create_query_embedding
 )
 
 builder.add_node(
@@ -404,8 +437,8 @@ builder.add_node(
 )
 
 builder.add_node(
-    "evaluate_retrieval",
-    evaluate_retrieval
+    "check_relevance",
+    check_relevance
 )
 
 builder.add_node(
@@ -440,17 +473,17 @@ builder.add_edge(
 
 builder.add_edge(
     "load_student_context",
-    "understand_question"
+    "create_query_embedding"
 )
 
 builder.add_edge(
-    "understand_question",
+    "create_query_embedding",
     "retrieve_course_material"
 )
 
 builder.add_edge(
     "retrieve_course_material",
-    "evaluate_retrieval"
+    "check_relevance"
 )
 
 
@@ -460,7 +493,7 @@ builder.add_edge(
 # Not relevant  → General LLM
 
 builder.add_conditional_edges(
-    "evaluate_retrieval",
+    "check_relevance",
     route_after_retrieval,
     {
         "rag_answer": "rag_answer",

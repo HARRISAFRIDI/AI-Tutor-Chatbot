@@ -18,10 +18,13 @@ from schemas import (
     ChatSessionUpdate,
     SignupResponse,
     StudentCreate,
-    CourseCreate
-    , CourseUpdate,
-    StudentUpdate
+    CourseCreate,
+    CourseUpdate,
+    StudentUpdate,
+    StudentMemoryUpdate,
+    StudentMemoryResponse,
 )
+from memory import load_memory, save_memory
 from graph import app as tutor_graph
 from ingest import create_chunks, load_pdf
 from embeddings import create_embedding
@@ -81,6 +84,11 @@ def course_payload(course, db):
 
 
 def index_document(db, document_id, pdf_path):
+    course_id = db.execute(
+        text("SELECT course_id FROM tutor.documents WHERE id = :document_id"),
+        {"document_id": document_id}
+    ).scalar_one()
+
     pages = load_pdf(pdf_path)
     chunks = create_chunks(pages)
 
@@ -95,12 +103,13 @@ def index_document(db, document_id, pdf_path):
         db.execute(
             text("""
                 INSERT INTO tutor.document_chunks
-                    (document_id, chunk_index, content, page_number, embedding)
+                    (document_id, course_id, chunk_index, content, page_number, embedding)
                 VALUES
-                    (:document_id, :chunk_index, :content, :page_number, :embedding)
+                    (:document_id, CAST(:course_id AS uuid), :chunk_index, :content, :page_number, :embedding)
             """),
             {
                 "document_id": document_id,
+                "course_id": str(course_id),
                 "chunk_index": index,
                 "content": chunk["content"],
                 "page_number": chunk["page_number"],
@@ -238,6 +247,41 @@ def get_student(
         "name": student.name,
         "email": student.email
     }
+
+
+# -------------------------
+# Student Memory APIs
+# -------------------------
+
+@app.get("/students/{student_id}/memory", response_model=StudentMemoryResponse)
+def get_student_memory(
+    student_id: UUID,
+    db: Session = Depends(get_db)
+):
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    profile = load_memory(str(student_id), db)
+    return {"student_id": str(student_id), **profile}
+
+
+@app.patch("/students/{student_id}/memory", response_model=StudentMemoryResponse)
+def update_student_memory(
+    student_id: UUID,
+    updates: StudentMemoryUpdate,
+    db: Session = Depends(get_db)
+):
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    # Only pass fields that were explicitly provided (not None)
+    data = {k: v for k, v in updates.model_dump().items() if v is not None}
+    save_memory(str(student_id), data, db)
+
+    profile = load_memory(str(student_id), db)
+    return {"student_id": str(student_id), **profile}
 
 
 # -------------------------
@@ -481,6 +525,7 @@ def chat(
         "retrieved_chunks": len(result.get("retrieved_chunks", [])),
         "retrieval_score": result.get("retrieval_score", 0.0),
         "retrieval_relevant": result.get("retrieval_relevant", False),
+        "llm_call_time_seconds": result.get("llm_call_time_seconds", 0.0),
         "quality_passed": result.get("quality_passed", False),
         "message_saved": result.get("message_saved", False)
     }
