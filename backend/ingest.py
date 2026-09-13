@@ -148,8 +148,15 @@ def create_document(db, course_id, pdf_path):
 # SAVE CHUNKS + EMBEDDINGS
 # --------------------------------------------------
 
-def save_chunks(db, document_id, chunks):
+def save_chunks(db, document_id, chunks, course_id=None):
+    """Insert chunks with embeddings.
 
+    course_id is stored directly on each row (migration 006) so that
+    retrieval.py can filter by course without a JOIN to tutor.documents.
+    Pass it whenever the caller knows the course; existing call-sites that
+    omit it will still work (the column allows NULL until migration 006
+    backfills existing rows).
+    """
     for index, chunk in enumerate(chunks):
 
         print(
@@ -166,6 +173,7 @@ def save_chunks(db, document_id, chunks):
                 INSERT INTO tutor.document_chunks
                 (
                     document_id,
+                    course_id,
                     chunk_index,
                     content,
                     page_number,
@@ -174,6 +182,7 @@ def save_chunks(db, document_id, chunks):
                 VALUES
                 (
                     :document_id,
+                    CAST(:course_id AS uuid),
                     :chunk_index,
                     :content,
                     :page_number,
@@ -182,10 +191,11 @@ def save_chunks(db, document_id, chunks):
             """),
             {
                 "document_id": document_id,
+                "course_id": str(course_id) if course_id else None,
                 "chunk_index": index,
                 "content": chunk["content"],
                 "page_number": chunk["page_number"],
-                "embedding": vector
+                "embedding": vector,
             }
         )
 
@@ -241,11 +251,12 @@ def main():
 
             print("Document ID:", document_id)
 
-            # Generate embeddings + save
+            # Generate embeddings + save (pass course_id for fast retrieval)
             save_chunks(
                 db,
                 document_id,
-                chunks
+                chunks,
+                course_id=course_id,
             )
 
             print("Document stored successfully!")

@@ -1,6 +1,13 @@
+import sys
 from typing import TypedDict, Literal
 from time import perf_counter
 from uuid import UUID
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from langgraph.graph import StateGraph, START, END
 from sqlalchemy import text
@@ -126,7 +133,7 @@ def retrieve_course_material(state: TutorState):
 
         print("\nTop result:")
         print("------------------------------")
-        print(results[0]["content"][:500])
+        print(results[0]["content"][:500].encode("ascii", "replace").decode("ascii"))
         print("------------------------------")
 
     else:

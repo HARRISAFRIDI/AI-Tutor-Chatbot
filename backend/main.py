@@ -985,6 +985,181 @@ def admin_activity(
         JOIN tutor.students s ON s.id = COALESCE(cv.student_id, cs.student_id)
         JOIN tutor.courses c ON c.id = COALESCE(cv.course_id, cs.course_id)
         ORDER BY m.created_at DESC
-        LIMIT 30
+        LIMIT 50
     """)).mappings().all()
-    return {"activity": [dict(row) for row in rows]}
+    return {"activity": [
+        {
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "role": row["role"],
+            "content": row["content"],
+            "student_name": row["student_name"],
+            "course_code": row["course_code"]
+        }
+        for row in rows
+    ]}
+
+
+@app.get("/admin/all-documents")
+def admin_list_all_documents(
+    admin: Student = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    documents = db.execute(text("""
+        SELECT d.id, d.title, d.file_name, d.created_at, d.course_id,
+               c.name AS course_name, c.code AS course_code,
+               count(dc.id) AS chunks
+        FROM tutor.documents d
+        JOIN tutor.courses c ON c.id = d.course_id
+        LEFT JOIN tutor.document_chunks dc ON dc.document_id = d.id
+        GROUP BY d.id, c.id
+        ORDER BY d.created_at DESC
+    """)).mappings().all()
+    return {"documents": [
+        {
+            "id": str(row["id"]),
+            "title": row["title"],
+            "file_name": row["file_name"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "course_id": str(row["course_id"]),
+            "course_name": row["course_name"],
+            "course_code": row["course_code"] or "",
+            "chunks": int(row["chunks"]),
+            "reindex_available": (UPLOAD_DIR / f"{row['id']}.pdf").exists()
+        }
+        for row in documents
+    ]}
+
+
+@app.get("/admin/enrollments")
+def admin_list_enrollments(
+    admin: Student = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    rows = db.execute(text("""
+        SELECT sc.student_id, sc.course_id, sc.created_at,
+               s.name AS student_name, s.email AS student_email,
+               c.name AS course_name, c.code AS course_code
+        FROM tutor.student_courses sc
+        JOIN tutor.students s ON s.id = sc.student_id
+        JOIN tutor.courses c ON c.id = sc.course_id
+        ORDER BY sc.created_at DESC
+    """)).mappings().all()
+    return {"enrollments": [
+        {
+            "student_id": str(row["student_id"]),
+            "course_id": str(row["course_id"]),
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "student_name": row["student_name"],
+            "student_email": row["student_email"],
+            "course_name": row["course_name"],
+            "course_code": row["course_code"] or ""
+        }
+        for row in rows
+    ]}
+
+
+@app.post("/admin/enrollments")
+def admin_create_enrollment(
+    payload: dict,
+    admin: Student = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    student_id = payload.get("student_id")
+    course_id = payload.get("course_id")
+    if not student_id or not course_id:
+        raise HTTPException(status_code=400, detail="student_id and course_id required")
+
+    existing = db.query(StudentCourse).filter(
+        StudentCourse.student_id == student_id,
+        StudentCourse.course_id == course_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Student is already enrolled in this course")
+
+    enrollment = StudentCourse(student_id=student_id, course_id=course_id)
+    db.add(enrollment)
+    db.commit()
+    return {"message": "Enrollment created", "student_id": student_id, "course_id": course_id}
+
+
+@app.delete("/admin/enrollments/{student_id}/{course_id}")
+def admin_delete_enrollment(
+    student_id: UUID,
+    course_id: UUID,
+    admin: Student = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(StudentCourse).filter(
+        StudentCourse.student_id == student_id,
+        StudentCourse.course_id == course_id
+    ).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+
+    db.delete(existing)
+    db.commit()
+    return {"message": "Enrollment removed"}
+
+
+@app.get("/admin/rag/stats")
+def admin_rag_stats(
+    admin: Student = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    stats = db.execute(text("""
+        SELECT
+            (SELECT count(*) FROM tutor.documents) AS documents,
+            (SELECT count(*) FROM tutor.document_chunks) AS total_chunks,
+            (SELECT count(*) FROM tutor.messages WHERE role = 'assistant') AS total_rag_queries,
+            (SELECT count(*) FROM tutor.messages WHERE role = 'assistant' AND answer_source = 'rag') AS rag_sourced_queries
+    """)).mappings().one()
+
+    return {
+        "llm_model": "gemini-3.6-flash",
+        "embedding_model": "gemini-embedding-001",
+        "vector_dimension": 1536,
+        "database_engine": "PostgreSQL + pgvector (HNSW Index)",
+        "similarity_metric": "Cosine Similarity",
+        "retrieval_k": 4,
+        "total_documents": int(stats["documents"]),
+        "total_chunks": int(stats["total_chunks"]),
+        "total_rag_queries": int(stats["total_rag_queries"]),
+        "rag_sourced_queries": int(stats["rag_sourced_queries"]),
+        "health_status": "Healthy"
+    }
+
+
+# In-memory system settings cache
+ADMIN_SETTINGS = {
+    "system_name": "University AI Tutor System",
+    "university_name": "State University",
+    "max_upload_size_mb": 25,
+    "ai_temperature": 0.1,
+    "ai_max_tokens": 1024,
+    "rag_similarity_threshold": 0.75,
+    "rag_max_chunks": 4,
+    "session_timeout_minutes": 60,
+    "allow_new_registrations": True,
+}
+
+
+@app.get("/admin/settings")
+def admin_get_settings(
+    admin: Student = Depends(require_admin),
+):
+    return {"settings": ADMIN_SETTINGS}
+
+
+@app.post("/admin/settings")
+def admin_update_settings(
+    payload: dict,
+    admin: Student = Depends(require_admin),
+):
+    ADMIN_SETTINGS.update(payload)
+    return {"message": "Settings updated", "settings": ADMIN_SETTINGS}
+
+
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
+
