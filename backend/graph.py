@@ -1,3 +1,5 @@
+import json
+import re
 import sys
 from typing import TypedDict, Literal
 from time import perf_counter
@@ -28,6 +30,10 @@ class TutorState(TypedDict, total=False):
     course_id: str | None
     course_name: str | None
     question: str
+    current_question: str
+    conversation_history: list[dict[str, str]]
+    standalone_question: str
+    is_followup: bool
     query_embedding: list[float]
 
     student_context: dict
@@ -80,12 +86,216 @@ def load_student_context(state: TutorState):
     }
 
 
+def load_conversation_history(state: TutorState):
+    student_id = state["student_id"]
+    course_id = state.get("course_id")
+    session_id = state.get("session_id")
+
+    history: list[dict[str, str]] = []
+    if session_id and course_id:
+        db = SessionLocal()
+        try:
+            rows = db.execute(
+                text("""
+                    SELECT m.role, m.content
+                    FROM tutor.messages m
+                    JOIN tutor.chat_sessions cs ON cs.id = m.session_id
+                    WHERE m.session_id = :session_id
+                      AND cs.student_id = :student_id
+                      AND cs.course_id = :course_id
+                    ORDER BY m.created_at DESC
+                    LIMIT 10
+                """),
+                {
+                    "session_id": session_id,
+                    "student_id": student_id,
+                    "course_id": course_id,
+                }
+            ).mappings().all()
+            history = [
+                {"role": row["role"], "content": row["content"]}
+                for row in reversed(rows)
+            ]
+        finally:
+            db.close()
+
+    print("\n========== CONVERSATION CONTEXT ==========")
+    print(json.dumps(history, ensure_ascii=True, indent=2))
+    return {"conversation_history": history}
+
+
+def _response_text(response) -> str:
+    if isinstance(response.content, str):
+        return response.content.strip()
+    return "\n".join(
+        block.get("text", "")
+        for block in response.content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ).strip()
+
+
+def _extract_history_topic(history: list[dict[str, str]]) -> str:
+    for item in reversed(history):
+        role = item.get("role")
+        content = str(item.get("content", "")).strip()
+        if not content or role != "user":
+            continue
+
+        match = re.search(r"(?:what is|what are|explain|describe|define|tell me about|how does|why is|when is|who is)\s+(.+?)(?:\?|$)", content, re.IGNORECASE)
+        if match:
+            topic = match.group(1).strip().rstrip(".")
+            topic = re.sub(r"\s+", " ", topic)
+            return topic
+
+        if content.lower().startswith("what is "):
+            topic = content[8:].strip().rstrip("?")
+            return re.sub(r"\s+", " ", topic)
+
+    return ""
+
+
+def _fallback_standalone_question(current_question: str, history: list[dict[str, str]]) -> tuple[str, bool]:
+    question = current_question.strip()
+    if not question:
+        return "", False
+
+    if not history:
+        return question, False
+
+    topic = _extract_history_topic(history)
+    if not topic:
+        return question, False
+
+    lowered = question.lower()
+    replacements = {
+        "it": topic,
+        "its": topic,
+        "this": topic,
+        "that": topic,
+        "these": topic,
+        "those": topic,
+        "they": topic,
+        "them": topic,
+        "above": topic,
+        "previous": topic,
+        "mentioned earlier": topic,
+        "what about": topic,
+        "how does it work": f"how does {topic} work",
+        "why is this important": f"why is {topic} important",
+        "explain further": f"explain further about {topic}",
+        "give an example": f"give an example of {topic}",
+        "what are its advantages": f"what are the advantages of {topic}",
+        "what are its disadvantages": f"what are the disadvantages of {topic}",
+    }
+
+    rewritten = question
+    for old, new in sorted(replacements.items(), key=lambda pair: len(pair[0]), reverse=True):
+        pattern = re.compile(rf"\b{re.escape(old)}\b", re.IGNORECASE)
+        if pattern.search(rewritten):
+            rewritten = pattern.sub(new, rewritten)
+            break
+
+    if rewritten == question:
+        if any(ref in lowered for ref in ["it", "its", "this", "that", "these", "those", "they", "them", "previous", "above", "mentioned earlier"]):
+            context_pattern = re.search(r"^(what|why|how|when|who|explain|describe|define|tell me about)\b", question, re.IGNORECASE)
+            if context_pattern:
+                verb = context_pattern.group(1)
+                if verb.lower() == "what":
+                    rewritten = question.replace("what", f"what are the", 1) if "its" in lowered or "it" in lowered else question
+                    if "its" in lowered:
+                        rewritten = rewritten.replace("its", f"of {topic}", 1)
+                    if "it" in lowered:
+                        rewritten = rewritten.replace("it", f"{topic}", 1)
+                elif verb.lower() == "how":
+                    rewritten = f"how does {topic} work"
+                elif verb.lower() == "why":
+                    rewritten = f"why is {topic} important"
+                elif verb.lower() in {"explain", "describe", "define", "tell me about"}:
+                    rewritten = f"{verb} {topic}"
+        if rewritten == question:
+            if question.lower().startswith("what are its types"):
+                rewritten = f"what are the types of {topic}"
+            elif question.lower().startswith("what are its advantages"):
+                rewritten = f"what are the advantages of {topic}"
+            elif question.lower().startswith("give me an example"):
+                rewritten = f"give me an example of {topic}"
+            elif question.lower().startswith("explain the first type"):
+                rewritten = f"explain the first type of {topic}"
+
+    return rewritten.strip(), rewritten.strip() != question.strip()
+
+
+def resolve_followup_question(state: TutorState):
+    current_question = state.get("current_question", state["question"]).strip()
+    history = state.get("conversation_history", [])
+
+    if not history:
+        print("\nCURRENT QUESTION:")
+        print(current_question)
+        print("FOLLOW-UP:")
+        print(False)
+        print("STANDALONE QUESTION:")
+        print(current_question)
+        return {
+            "standalone_question": current_question,
+            "is_followup": False,
+        }
+
+    history_text = json.dumps(history, ensure_ascii=True, indent=2)
+    prompt = f"""
+You resolve follow-up questions for a university tutor.
+
+Use only the recent conversation below, which belongs to the current student,
+course, and chat session. Decide whether the current question depends on that
+conversation. If it is standalone, preserve it unchanged. If it is a
+follow-up, rewrite it as one complete standalone question with all references
+resolved. Do not answer the question.
+
+Return only valid JSON with exactly these keys:
+{{"is_followup": true or false, "standalone_question": "..."}}
+
+RECENT CONVERSATION:
+{history_text}
+
+CURRENT QUESTION:
+{current_question}
+"""
+
+    try:
+        response = llm.invoke(prompt)
+        raw_result = _response_text(response)
+        if raw_result.startswith("```"):
+            raw_result = raw_result.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(raw_result)
+        standalone_question = str(parsed["standalone_question"]).strip()
+        is_followup = bool(parsed["is_followup"])
+        if not standalone_question:
+            raise ValueError("Empty standalone question")
+    except Exception as exc:
+        print("FOLLOW-UP RESOLVER LLM ERROR:", exc)
+        standalone_question, is_followup = _fallback_standalone_question(current_question, history)
+
+    print("\nCURRENT QUESTION:")
+    print(current_question)
+    print("CONVERSATION CONTEXT:")
+    print(history_text)
+    print("FOLLOW-UP:")
+    print(is_followup)
+    print("STANDALONE QUESTION:")
+    print(standalone_question)
+
+    return {
+        "standalone_question": standalone_question,
+        "is_followup": is_followup,
+    }
+
+
 # ============================================================
-# STEP 3 — CREATE QUERY EMBEDDING
+# STEP 4 — CREATE QUERY EMBEDDING
 # ============================================================
 
 def create_query_embedding(state: TutorState):
-    question = state["question"].strip()
+    question = state.get("standalone_question", state["question"]).strip()
 
     print("\n========== CREATE QUERY EMBEDDING ==========")
     print("Question:", question)
@@ -103,11 +313,12 @@ def retrieve_course_material(state: TutorState):
 
     print("\n========== RETRIEVE COURSE MATERIAL ==========")
 
-    question = state["question"].strip()
+    question = state.get("standalone_question", state["question"]).strip()
     course_id = state["course_id"]
     course_name = state["course_name"]
 
     print("Question:", question)
+    print("RAG QUERY:", question)
     print("Course ID:", course_id)
     print("Course:", course_name)
 
@@ -167,7 +378,7 @@ def check_relevance(state: TutorState):
 
     print("Top similarity score:", top_score)
     print("Threshold:", threshold)
-    print("Retrieval relevant:", relevant)
+    print("RETRIEVAL RELEVANT:", relevant)
 
     if relevant:
         print("Decision: RAG")
@@ -184,7 +395,7 @@ def check_relevance(state: TutorState):
 def rag_answer(state: TutorState):
     print("\n========== RAG ANSWER ==========")
 
-    question = state["question"]
+    question = state.get("standalone_question", state["question"])
     retrieved_chunks = state.get("retrieved_chunks", [])
 
     if not retrieved_chunks:
@@ -295,7 +506,7 @@ If the student asks about their own profile (e.g. favourite topic, learning
 style), answer directly from the STUDENT PROFILE section above.
 
 Student question:
-{state["question"]}
+{state.get("standalone_question", state["question"])}
 """
 
     llm_started_at = perf_counter()
@@ -434,6 +645,16 @@ builder.add_node(
 )
 
 builder.add_node(
+    "load_conversation_history",
+    load_conversation_history
+)
+
+builder.add_node(
+    "resolve_followup_question",
+    resolve_followup_question
+)
+
+builder.add_node(
     "create_query_embedding",
     create_query_embedding
 )
@@ -480,6 +701,16 @@ builder.add_edge(
 
 builder.add_edge(
     "load_student_context",
+    "load_conversation_history"
+)
+
+builder.add_edge(
+    "load_conversation_history",
+    "resolve_followup_question"
+)
+
+builder.add_edge(
+    "resolve_followup_question",
     "create_query_embedding"
 )
 

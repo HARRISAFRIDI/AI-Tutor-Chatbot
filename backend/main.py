@@ -515,6 +515,7 @@ def chat(
         "course_id": str(request.course_id),
         "course_name": course.name,
         "question": request.question,
+        "current_question": request.question,
         "session_id": str(session_id)
     })
 
@@ -1162,4 +1163,4 @@ def admin_update_settings(
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
-
+
