@@ -18,7 +18,10 @@ import type {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const apiBaseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+const apiBaseUrl = (
+  import.meta.env.VITE_API_URL ||
+  'https://caring-vibrancy-production-0f21.up.railway.app'
+).replace(/\/$/, '')
 
 function formatApiError(detail: unknown, fallback: string): string {
   if (typeof detail === 'string') return detail
