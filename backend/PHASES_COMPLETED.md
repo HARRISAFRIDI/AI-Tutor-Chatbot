@@ -59,7 +59,7 @@ The following checks were completed:
 
 The `frontend/` folder contains a lightweight browser interface served by FastAPI at `/app/`. It loads students and courses from the existing API, submits questions to `POST /chat`, displays the tutor answer, and shows retrieval, quality, and save metadata. It also includes loading and error states so a failed request is visible instead of silently doing nothing.
 
-Open the interface at `http://127.0.0.1:8000/app/` after starting the backend.
+Open the interface at `http://127.0.0.1:8080/app/` after starting the backend, or use the platform-assigned `PORT` if the deployment environment sets one.
 
 ### Frontend error fix
 
@@ -100,10 +100,11 @@ From the repository root:
 ```powershell
 Set-Location backend
 .\.venv\Scripts\Activate.ps1
-python -m uvicorn main:app --reload
+$env:PORT = "8080"
+python -m uvicorn main:app --host 0.0.0.0 --port $env:PORT --reload
 ```
 
-Then open `http://127.0.0.1:8000/docs` to try the API. To run the original graph demonstration directly:
+Then open `http://127.0.0.1:8080/docs` to try the API. To run the original graph demonstration directly:
 
 ```powershell
 python graph.py

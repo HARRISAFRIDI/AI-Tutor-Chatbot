@@ -5,6 +5,8 @@ import tempfile
 import shutil
 
 from fastapi import FastAPI, Depends, File, Header, UploadFile, HTTPException
+
+PORT = int(os.getenv("PORT", "8080"))
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +74,12 @@ if frontend_dir.is_dir():
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
 
 
 def require_admin(
