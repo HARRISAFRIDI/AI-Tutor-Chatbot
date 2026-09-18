@@ -41,17 +41,25 @@ app = FastAPI(
     version="1.0.0"
 )
 
-frontend_urls = [
+allowed_origins = {
     origin.strip().rstrip("/")
-    for origin in os.getenv("FRONTEND_URL", "").split(",")
+    for origin in os.getenv(
+        "FRONTEND_URL",
+        "https://ai-tutor-frontend-production-7706.up.railway.app",
+    ).split(",")
     if origin.strip()
-]
+}
+allowed_origins.add("https://ai-tutor-frontend-production-7706.up.railway.app")
+allowed_origins.add("http://localhost:5173")
+allowed_origins.add("http://localhost:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=frontend_urls or ["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=sorted(allowed_origins),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    expose_headers=["Content-Type", "Authorization"],
 )
 
 
