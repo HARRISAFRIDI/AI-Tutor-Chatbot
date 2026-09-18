@@ -18,6 +18,8 @@ import type {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const apiBaseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
 function formatApiError(detail: unknown, fallback: string): string {
   if (typeof detail === 'string') return detail
   if (Array.isArray(detail))
@@ -30,7 +32,7 @@ function formatApiError(detail: unknown, fallback: string): string {
 }
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, options)
+  const response = await fetch(`${apiBaseUrl}${path}`, options)
   const contentType = response.headers.get('content-type') || ''
   const result = contentType.includes('application/json') ? await response.json() : {}
   if (!response.ok) throw new Error(formatApiError(result?.detail, `Request failed (${response.status})`))

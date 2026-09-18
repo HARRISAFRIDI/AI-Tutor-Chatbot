@@ -1,9 +1,11 @@
 
 from pathlib import Path
+import os
 import tempfile
 import shutil
 
 from fastapi import FastAPI, Depends, File, Header, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from uuid import UUID
@@ -35,6 +37,19 @@ app = FastAPI(
     title="University AI Tutor",
     description="AI-powered university learning assistant",
     version="1.0.0"
+)
+
+frontend_urls = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("FRONTEND_URL", "").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=frontend_urls or ["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
