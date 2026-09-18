@@ -4,11 +4,12 @@ import tempfile
 import shutil
 
 from fastapi import FastAPI, Depends, File, Header, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from database import get_db
 from models import Student, Course, StudentCourse
@@ -35,6 +36,16 @@ app = FastAPI(
     description="AI-powered university learning assistant",
     version="1.0.0"
 )
+
+
+@app.exception_handler(OperationalError)
+async def database_unavailable_handler(request, exc):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Supabase database is unavailable. Check the DATABASE_URL and network access."
+        },
+    )
 
 app.mount(
     "/app",
@@ -129,9 +140,18 @@ def root():
 @app.get("/db-test")
 def database_test(db: Session = Depends(get_db)):
     students = db.query(Student).all()
+    postgres_version = db.execute(text("SELECT version()")).scalar_one()
+    pgvector_enabled = db.execute(text("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_extension WHERE extname = 'vector'
+        )
+    """)).scalar_one()
 
     return {
         "database_connected": True,
+        "database_engine": "Supabase PostgreSQL",
+        "postgres_version": postgres_version,
+        "pgvector_enabled": bool(pgvector_enabled),
         "student_count": len(students)
     }
 

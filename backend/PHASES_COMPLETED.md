@@ -20,7 +20,7 @@ The migration `migrations/001_create_conversations.sql` adds:
 - `tutor.messages` for user and assistant messages.
 - An index on `messages.conversation_id` for conversation history lookups.
 
-The migration has been applied to the configured local PostgreSQL database. The graph save step now creates a conversation and stores both the question and generated answer, including answer source and retrieval metadata. Standalone runs with the placeholder `test-student` remain non-persistent and report `message_saved: false`; API requests with valid UUIDs are persisted.
+The migration has been applied to the configured Supabase PostgreSQL database. The graph save step now creates a conversation and stores both the question and generated answer, including answer source and retrieval metadata. Standalone runs with the placeholder `test-student` remain non-persistent and report `message_saved: false`; API requests with valid UUIDs are persisted.
 
 ## Phase 4: Chat API
 
@@ -109,4 +109,4 @@ Then open `http://127.0.0.1:8000/docs` to try the API. To run the original graph
 python graph.py
 ```
 
-The API requires PostgreSQL to be running with the `DATABASE_URL` in `.env`, and answer generation requires a valid `GEMINI_API_KEY`.
+The API requires the Supabase PostgreSQL connection URL in `.env`, and answer generation requires a valid `GEMINI_API_KEY`.
