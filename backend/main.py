@@ -47,11 +47,13 @@ async def database_unavailable_handler(request, exc):
         },
     )
 
-app.mount(
-    "/app",
-    StaticFiles(directory=Path(__file__).parent.parent / "frontend", html=True),
-    name="frontend"
-)
+frontend_dir = Path(__file__).parent.parent / "frontend"
+if frontend_dir.is_dir():
+    app.mount(
+        "/app",
+        StaticFiles(directory=frontend_dir, html=True),
+        name="frontend"
+    )
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
